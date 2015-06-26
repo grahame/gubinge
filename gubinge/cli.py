@@ -52,24 +52,28 @@ class SSHMessage:
             raise MessageTruncated()
         if self._length < 1:
             raise MessageInvalid()
-        self._data = bytes[4:4+self._length]
-        print("woot, we have a complete message, len=%d" % (self._length), self._data)
+        self._data = bytes[:4+self._length]
         self._parse()
 
     def __len__(self):
         "length of this message, including the length uint at the front"
         return 4 + self._length
 
+    def get_data(self):
+        return self._data
+
     def _parse(self):
-        code, = struct.unpack('B', self._data[:1])
+        code, = struct.unpack('B', self._data[4:5])
         try:
             self.code = MessageType(code)
         except ValueError:
             raise MessageInvalid()
+        print("woot, we have a complete message, len=%d, code=%s" % (len(self), self.code))
 
 
 class SSHAgentConnection:
-    def __init__(self, connection_id, client_reader, client_writer):
+    def __init__(self, proxy_path, connection_id, client_reader, client_writer):
+        self._proxy_path = proxy_path
         self._client_reader = client_reader
         self._client_writer = client_writer
         self._id = connection_id
@@ -81,15 +85,23 @@ class SSHAgentConnection:
     @asyncio.coroutine
     def handle(self):
         self.log("connected")
-        while True:
-            data = yield from self._client_reader.read(8192)
-            if not data:
-                break
-            self.log(">> got data", data)
-            self._buf += data
-            for mesg in self._parse():
-                self._respond(mesg)
-        self.log("disconnected")
+        proxy_reader, proxy_writer = yield from asyncio.open_unix_connection(path=self._proxy_path)
+        try:
+            self.log("proxy connection opened", proxy_reader, proxy_writer)
+            while True:
+                data = yield from self._client_reader.read(8192)
+                if not data:
+                    break
+                self.log(">> got data", data)
+                self._buf += data
+                for mesg in self._parse():
+                    proxy_writer.write(mesg.get_data())
+                    response = yield from proxy_reader.read(8192)
+                    self._client_writer.write(response)
+                    #self._respond(mesg)
+            self.log("disconnected")
+        finally:
+            proxy_writer.close()
 
     def _parse(self):
         while self._buf:
@@ -121,7 +133,7 @@ class SSHAgentProxy:
 
     @asyncio.coroutine
     def _client_connected(self, client_reader, client_writer):
-        conn = SSHAgentConnection(self.get_id(), client_reader, client_writer)
+        conn = SSHAgentConnection(self._proxy_path, self.get_id(), client_reader, client_writer)
         yield from conn.handle()
 
     @asyncio.coroutine
