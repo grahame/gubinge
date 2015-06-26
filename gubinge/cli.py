@@ -32,8 +32,8 @@ class SSHMessage:
         return 4 + self._length
 
     def _parse(self):
-        code_byte, = struct.unpack('c', self._data[:1])
-        code = code_byte[0]
+        code, = struct.unpack('B', self._data[:1])
+        self.code = code
         print("code", code)
 
 
@@ -70,7 +70,10 @@ class SSHAgentConnection:
             yield mesg
 
     def _respond(self, mesg):
-        self._client_writer.write(b'squeek')
+        if mesg.code == 1:
+            self._client_writer.write(struct.pack('>IBI', 5, 2, 0))
+        elif mesg.code == 11:
+            self._client_writer.write(struct.pack('>IBI', 5, 12, 0))
 
 
 class SSHAgentProxy:
