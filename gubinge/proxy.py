@@ -5,6 +5,10 @@ from socket import gethostname
 from .proto import SSHMessage
 
 
+class StreamException(Exception):
+    pass
+
+
 loop = asyncio.get_event_loop()
 
 
@@ -41,6 +45,9 @@ class SSHAgentConnection:
         remainder = buffer[4:]
         if len(remainder) < mesg_length:
             return buffer, None
+        # arbitrary limit - taken from ssh-agent.c in OpenSSH
+        if mesg_length > 256 * 1024:
+            raise StreamException()
         mesg = SSHMessage(remainder[:mesg_length])
         return remainder[mesg_length:], mesg
 
