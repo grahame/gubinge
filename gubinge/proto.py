@@ -28,10 +28,6 @@ class MessageType(Enum):
     SSH_AGENTC_ADD_SMARTCARD_KEY_CONSTRAINED = 26
 
 
-class MessageTruncated(Exception):
-    pass
-
-
 class MessageInvalid(Exception):
     pass
 
@@ -39,25 +35,16 @@ class MessageInvalid(Exception):
 class SSHMessage:
     def __init__(self, bytes):
         "bytes may include more than one SSH message; in which case this will parse the first message"
-        if len(bytes) < 4:
-            raise MessageTruncated()
-        self._length, = struct.unpack('>I', bytes[:4])
-        if len(bytes) < self._length:
-            raise MessageTruncated()
-        if self._length < 1:
+        self._data = bytes
+        if len(self._data) < 1:
             raise MessageInvalid()
-        self._data = bytes[:4+self._length]
-        self._parse()
-
-    def __len__(self):
-        "length of this message, including the length uint at the front"
-        return 4 + self._length
+        self._decode()
 
     def get_data(self):
         return self._data
 
-    def _parse(self):
-        code, = struct.unpack('B', self._data[4:5])
+    def _decode(self):
+        code, = struct.unpack('B', self._data[:1])
         try:
             self._code = MessageType(code)
         except ValueError:

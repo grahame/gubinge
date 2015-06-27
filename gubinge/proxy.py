@@ -1,9 +1,8 @@
-
 import asyncio
-import struct
 import os.path
+import struct
 from socket import gethostname
-from .proto import MessageType, SSHMessage, MessageTruncated
+from .proto import SSHMessage
 
 
 loop = asyncio.get_event_loop()
@@ -29,16 +28,33 @@ class SSHAgentConnection:
                 break
             buffer += data
             while True:
-                buffer, mesg = cls._parse(buffer)
+                buffer, mesg = cls.read_one_message(buffer)
                 if mesg is None:
                     break
                 callback(mesg)
+
+    @classmethod
+    def read_one_message(cls, buffer):
+        if len(buffer) < 4:
+            return buffer, None
+        mesg_length, = struct.unpack('>I', buffer[:4])
+        remainder = buffer[4:]
+        if len(remainder) < mesg_length:
+            return buffer, None
+        mesg = SSHMessage(remainder[:mesg_length])
+        return remainder[mesg_length:], mesg
+
+    @classmethod
+    def send_message(cls, writer, mesg):
+        data = mesg.get_data()
+        writer.write(struct.pack('>I', len(data)))
+        writer.write(data)
 
     @asyncio.coroutine
     def handle(self):
         def respond(mesg):
             self.log("from client", mesg.get_code())
-            upstream_writer.write(mesg.get_data())
+            SSHAgentConnection.send_message(upstream_writer, mesg)
 
         self.log("connection received")
         upstream_reader, upstream_writer = yield from asyncio.open_unix_connection(path=self._proxy_path)
@@ -54,18 +70,10 @@ class SSHAgentConnection:
     def read_from_upstream(self, upstream_reader):
         def respond(mesg):
             self.log("from real agent", mesg.get_code())
-            self._client_writer.write(mesg.get_data())
+            SSHAgentConnection.send_message(self._client_writer, mesg)
 
         yield from SSHAgentConnection.read_messages_from_stream(upstream_reader, respond)
         self.log("disconnected from upstream")
-
-    @classmethod
-    def _parse(cls, buffer):
-        try:
-            mesg = SSHMessage(buffer)
-        except MessageTruncated:
-            return buffer, None
-        return buffer[len(mesg):], mesg
 
 
 class SSHAgentProxy:
