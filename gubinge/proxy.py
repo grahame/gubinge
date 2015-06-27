@@ -19,37 +19,44 @@ class SSHAgentConnection:
     def log(self, *args, **kwargs):
         print("[%d]" % self._id, *args, **kwargs)
 
+    @classmethod
+    @asyncio.coroutine
+    def read_messages_from_stream(cls, stream, callback):
+        buffer = b''
+        while True:
+            data = yield from stream.read(8192)
+            if not data:
+                break
+            buffer += data
+            while True:
+                buffer, mesg = cls._parse(buffer)
+                if mesg is None:
+                    break
+                callback(mesg)
+
     @asyncio.coroutine
     def handle(self):
+        def respond(mesg):
+            self.log("from client", mesg.get_code())
+            upstream_writer.write(mesg.get_data())
+
         self.log("connection received")
         upstream_reader, upstream_writer = yield from asyncio.open_unix_connection(path=self._proxy_path)
         self.log("connected to upstream")
         loop.create_task(self.read_from_upstream(upstream_reader))
-        buffer = b''
         try:
-            while True:
-                data = yield from self._client_reader.read(8192)
-                if not data:
-                    break
-                self.log(">> got data", data)
-                buffer += data
-                while True:
-                    buffer, mesg = self._parse(buffer)
-                    if mesg is None:
-                        break
-                    upstream_writer.write(mesg.get_data())
+            yield from SSHAgentConnection.read_messages_from_stream(self._client_reader, respond)
             self.log("disconnected")
         finally:
             upstream_writer.close()
 
     @asyncio.coroutine
     def read_from_upstream(self, upstream_reader):
-        while True:
-            data = yield from upstream_reader.read(8192)
-            if not data:
-                break
-            self.log("from real agent", data)
-            self._client_writer.write(data)
+        def respond(mesg):
+            self.log("from real agent", mesg.get_code())
+            self._client_writer.write(mesg.get_data())
+
+        yield from SSHAgentConnection.read_messages_from_stream(upstream_reader, respond)
         self.log("disconnected from upstream")
 
     @classmethod
@@ -59,12 +66,6 @@ class SSHAgentConnection:
         except MessageTruncated:
             return buffer, None
         return buffer[len(mesg):], mesg
-
-    def _respond(self, mesg):
-        if mesg.code is MessageType.SSH_AGENTC_REQUEST_RSA_IDENTITIES:
-            self._client_writer.write(struct.pack('>IBI', 5, MessageType.SSH_AGENT_RSA_IDENTITIES_ANSWER.value, 0))
-        elif mesg.code == MessageType.SSH2_AGENTC_REQUEST_IDENTITIES:
-            self._client_writer.write(struct.pack('>IBI', 5, MessageType.SSH2_AGENT_IDENTITIES_ANSWER.value, 0))
 
 
 class SSHAgentProxy:

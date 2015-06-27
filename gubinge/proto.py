@@ -61,7 +61,9 @@ class SSHMessage:
     def _parse(self):
         code, = struct.unpack('B', self._data[4:5])
         try:
-            self.code = MessageType(code)
+            self._code = MessageType(code)
         except ValueError:
             raise MessageInvalid()
-        print("woot, we have a complete message, len=%d, code=%s" % (len(self), self.code))
+
+    def get_code(self):
+        return self._code
