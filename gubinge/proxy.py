@@ -58,29 +58,31 @@ class SSHAgentConnection:
         writer.write(data)
 
     @asyncio.coroutine
-    def handle(self):
-        def respond(mesg):
-            self.log("from client", mesg.get_code())
-            SSHAgentConnection.send_message(upstream_writer, mesg)
-
+    def go(self):
         self.log("connection received")
         upstream_reader, upstream_writer = yield from asyncio.open_unix_connection(path=self._proxy_path)
         self.log("connected to upstream")
         loop.create_task(self.read_from_upstream(upstream_reader))
         try:
-            yield from SSHAgentConnection.read_messages_from_stream(self._client_reader, respond)
+            yield from SSHAgentConnection.read_messages_from_stream(
+                self._client_reader,
+                lambda mesg: self.message_from_client(upstream_writer, mesg))
             self.log("disconnected")
         finally:
             upstream_writer.close()
 
     @asyncio.coroutine
     def read_from_upstream(self, upstream_reader):
-        def respond(mesg):
-            self.log("from real agent", mesg.get_code())
-            SSHAgentConnection.send_message(self._client_writer, mesg)
-
-        yield from SSHAgentConnection.read_messages_from_stream(upstream_reader, respond)
+        yield from SSHAgentConnection.read_messages_from_stream(upstream_reader, self.message_from_upstream)
         self.log("disconnected from upstream")
+
+    def message_from_client(self, upstream_writer, mesg):
+        self.log("from client", mesg.get_code())
+        SSHAgentConnection.send_message(upstream_writer, mesg)
+
+    def message_from_upstream(self, mesg):
+        self.log("from upstream", mesg.get_code())
+        SSHAgentConnection.send_message(self._client_writer, mesg)
 
 
 class SSHAgentProxy:
@@ -97,7 +99,7 @@ class SSHAgentProxy:
     @asyncio.coroutine
     def _client_connected(self, client_reader, client_writer):
         conn = SSHAgentConnection(self._proxy_path, self.get_id(), client_reader, client_writer)
-        yield from conn.handle()
+        yield from conn.go()
 
     @asyncio.coroutine
     def serve(self):
