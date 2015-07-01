@@ -2,7 +2,8 @@ import asyncio
 import os.path
 import struct
 from socket import gethostname
-from .proto import SSHMessage
+from collections import deque
+from .proto import SSHMessage, MessageType
 
 
 class StreamException(Exception):
@@ -12,12 +13,92 @@ class StreamException(Exception):
 loop = asyncio.get_event_loop()
 
 
+class ResponderFixed:
+    upstream = False
+
+    def __init__(self, response_bytes):
+        self._response_bytes = response_bytes
+
+    def handle(self, writer):
+        SSHAgentConnection.send_message(writer, self._response_bytes)
+
+
+class ResponderProxy:
+    upstream = True
+
+    def handle(self, writer, mesg):
+        SSHAgentConnection.send_message(writer, mesg)
+
+
+class ResponderFilterIdentities:
+    upstream = True
+
+    def handle(self, writer, mesg):
+        print("TODO filter identities", mesg)
+        SSHAgentConnection.send_message(writer, mesg)
+
+
+class MessageActionSSH1EmptyIdentities:
+    def process(self, writer):
+        mesg = SSHMessage(
+            struct.pack(
+                '>BI',
+                MessageType.SSH_AGENT_RSA_IDENTITIES_ANSWER.value, 0))
+        return ResponderFixed(mesg)
+
+
+class MessageActionFilterIdentities:
+    def __init__(self, mesg):
+        self._mesg = mesg
+
+    def process(self, writer):
+        SSHAgentConnection.send_message(writer, self._mesg)
+        return ResponderFilterIdentities()
+
+
+class MessageActionCheckSign:
+    def __init__(self, mesg):
+        self._mesg = mesg
+
+    def process(self, writer):
+        print("TODO check we want to sign:", self._mesg)
+        SSHAgentConnection.send_message(writer, self._mesg)
+        return ResponderProxy()
+
+
+class MessageActionDrop:
+    def process(self, writer):
+        return None
+
+
+class MessageActionProxy:
+    def __init__(self, mesg):
+        self._mesg = mesg
+
+    def process(self, writer):
+        SSHAgentConnection.send_message(writer, self._mesg)
+        return ResponderProxy()
+
+
+class MessageActionFailure:
+    pass
+
+
 class SSHAgentConnection:
+    message_buffer_size = 256
+    read_size = 8192
+    # arbitrary limit - taken from ssh-agent.c in OpenSSH
+    max_message_size = 256 * 1024
+
     def __init__(self, proxy_path, connection_id, client_reader, client_writer):
         self._proxy_path = proxy_path
         self._client_reader = client_reader
         self._client_writer = client_writer
         self._id = connection_id
+        # pending responders
+        self._pending_queue = deque(maxlen=SSHAgentConnection.message_buffer_size)
+        # responses in from the client
+        self._response_queue = deque(maxlen=SSHAgentConnection.message_buffer_size)
 
     def log(self, *args, **kwargs):
         print("[%d]" % self._id, *args, **kwargs)
@@ -27,7 +108,7 @@ class SSHAgentConnection:
     def read_messages_from_stream(cls, stream, callback):
         buffer = b''
         while True:
-            data = yield from stream.read(8192)
+            data = yield from stream.read(SSHAgentConnection.read_size)
             if not data:
                 break
             buffer += data
@@ -45,8 +126,7 @@ class SSHAgentConnection:
         remainder = buffer[4:]
         if len(remainder) < mesg_length:
             return buffer, None
-        # arbitrary limit - taken from ssh-agent.c in OpenSSH
-        if mesg_length > 256 * 1024:
+        if mesg_length > SSHAgentConnection.max_message_size:
             raise StreamException()
         mesg = SSHMessage(remainder[:mesg_length])
         return remainder[mesg_length:], mesg
@@ -76,13 +156,53 @@ class SSHAgentConnection:
         yield from SSHAgentConnection.read_messages_from_stream(upstream_reader, self.message_from_upstream)
         self.log("disconnected from upstream")
 
+    def get_mesg_action(self, mesg):
+        code = mesg.get_code()
+        if code == MessageType.SSH_AGENTC_REQUEST_RSA_IDENTITIES:
+            return MessageActionSSH1EmptyIdentities()
+        if code == MessageType.SSH2_AGENTC_REQUEST_IDENTITIES:
+            return MessageActionFilterIdentities(mesg)
+        if code == MessageType.SSH2_AGENTC_SIGN_REQUEST:
+            return MessageActionCheckSign(mesg)
+        if code in [MessageType.SSH_AGENT_FAILURE, MessageType.SSH_AGENT_SUCCESS]:
+            return MessageActionDrop()
+        if code in [
+                MessageType.SSH2_AGENTC_ADD_IDENTITY,
+                MessageType.SSH2_AGENTC_REMOVE_IDENTITY,
+                MessageType.SSH2_AGENTC_REMOVE_ALL_IDENTITIES,
+                MessageType.SSH2_AGENTC_ADD_ID_CONSTRAINED]:
+            return MessageActionProxy(mesg)
+        return MessageActionFailure()
+
+    def _run_queue(self):
+        while len(self._pending_queue) > 0:
+            responder = self._pending_queue.popleft()
+            # simple, baked message waiting in the queue;
+            # can be sent whenever we get up to it
+            if not responder.upstream:
+                responder.handle(self._client_writer)
+                continue
+            # responder requires a message from upstream
+            # if we don't have one, requeue it and end run
+            if len(self._response_queue) == 0:
+                self._pending_queue.appendleft(responder)
+                break
+            else:
+                mesg = self._response_queue.popleft()
+                responder.handle(self._client_writer, mesg)
+
     def message_from_client(self, upstream_writer, mesg):
         self.log("from client", mesg.get_code())
-        SSHAgentConnection.send_message(upstream_writer, mesg)
+        action = self.get_mesg_action(mesg)
+        responder = action.process(upstream_writer)
+        if responder:
+            self._pending_queue.append(responder)
+            self._run_queue()
 
     def message_from_upstream(self, mesg):
         self.log("from upstream", mesg.get_code())
-        SSHAgentConnection.send_message(self._client_writer, mesg)
+        self._response_queue.append(mesg)
+        self._run_queue()
 
 
 class SSHAgentProxy:
@@ -115,7 +235,6 @@ def proxy():
     proxy = SSHAgentProxy(socket_path, os.getenv("SSH_AUTH_SOCK"))
     os.environ["SSH_AUTH_SOCK"] = socket_path
 
-    print(socket_path)
     loop.run_until_complete(proxy.serve())
     try:
         loop.run_forever()
