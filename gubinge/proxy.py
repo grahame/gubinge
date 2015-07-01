@@ -3,7 +3,7 @@ import os.path
 import struct
 from socket import gethostname
 from collections import deque
-from .proto import SSHMessage, MessageType
+from .proto import SSHMessage, SSHKeyList, MessageType
 
 
 class StreamException(Exception):
@@ -35,6 +35,8 @@ class ResponderFilterIdentities:
 
     def handle(self, writer, mesg):
         print("TODO filter identities", mesg)
+        keylist = SSHKeyList.from_bytes(mesg.get_data())
+        print(keylist)
         SSHAgentConnection.send_message(writer, mesg)
 
 

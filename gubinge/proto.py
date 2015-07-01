@@ -52,3 +52,35 @@ class SSHMessage:
 
     def get_code(self):
         return self._code
+
+
+class SSHKeyList:
+    def __init__(self):
+        self._keys = []
+
+    @classmethod
+    def decode_str(self, bytes):
+        if len(bytes) < 4:
+            raise ValueError("string length missing")
+        str_len, = struct.unpack('>I', bytes[:4])
+        print("str_len", str_len)
+        remainder = bytes[4:]
+        if len(remainder) < str_len:
+            raise ValueError("unable to decode string")
+        return remainder[str_len:], remainder[:str_len]
+
+    @classmethod
+    def from_bytes(self, bytes):
+        if len(bytes) < 5:
+            raise ValueError('key list is too short')
+        header = bytes[:5]
+        code, num_keys = struct.unpack('>BI', header)
+        if code != MessageType.SSH2_AGENT_IDENTITIES_ANSWER.value:
+            raise ValueError('decoding wrong type of message (%d)' % code)
+        buffer = bytes[5:]
+        print("num_keys", num_keys)
+        for key in range(num_keys):
+            buffer, blob = SSHKeyList.decode_str(buffer)
+            buffer, comment = SSHKeyList.decode_str(buffer)
+            print("blob:", blob)
+            print("comment:", comment)
