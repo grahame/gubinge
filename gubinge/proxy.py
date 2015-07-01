@@ -40,11 +40,10 @@ class ResponderFilterIdentities:
 
 class MessageActionSSH1EmptyIdentities:
     def process(self, writer):
-        mesg = SSHMessage(
+        return ResponderFixed(SSHMessage(
             struct.pack(
                 '>BI',
-                MessageType.SSH_AGENT_RSA_IDENTITIES_ANSWER.value, 0))
-        return ResponderFixed(mesg)
+                MessageType.SSH_AGENT_RSA_IDENTITIES_ANSWER.value, 0)))
 
 
 class MessageActionFilterIdentities:
@@ -81,7 +80,11 @@ class MessageActionProxy:
 
 
 class MessageActionFailure:
-    pass
+    def process(self, writer):
+        return ResponderFixed(SSHMessage(
+            struct.pack(
+                '>B',
+                MessageType.SSH_AGENT_FAILURE.value)))
 
 
 class SSHAgentConnection:
