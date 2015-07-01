@@ -2,6 +2,17 @@ import struct
 from enum import Enum
 
 
+def decode_str(bytes):
+    if len(bytes) < 4:
+        raise ValueError("string length missing")
+    str_len, = struct.unpack('>I', bytes[:4])
+    print("str_len", str_len)
+    remainder = bytes[4:]
+    if len(remainder) < str_len:
+        raise ValueError("unable to decode string")
+    return remainder[str_len:], remainder[:str_len]
+
+
 class MessageType(Enum):
     SSH_AGENTC_REQUEST_RSA_IDENTITIES = 1
     SSH_AGENT_RSA_IDENTITIES_ANSWER = 2
@@ -54,20 +65,15 @@ class SSHMessage:
         return self._code
 
 
+class SSHPublicKey:
+    def __init__(self, bytes):
+        buffer, identifier = decode_str(bytes)
+        print('identifier', identifier)
+
+
 class SSHKeyList:
     def __init__(self):
         self._keys = []
-
-    @classmethod
-    def decode_str(self, bytes):
-        if len(bytes) < 4:
-            raise ValueError("string length missing")
-        str_len, = struct.unpack('>I', bytes[:4])
-        print("str_len", str_len)
-        remainder = bytes[4:]
-        if len(remainder) < str_len:
-            raise ValueError("unable to decode string")
-        return remainder[str_len:], remainder[:str_len]
 
     @classmethod
     def from_bytes(self, bytes):
@@ -80,7 +86,8 @@ class SSHKeyList:
         buffer = bytes[5:]
         print("num_keys", num_keys)
         for key in range(num_keys):
-            buffer, blob = SSHKeyList.decode_str(buffer)
-            buffer, comment = SSHKeyList.decode_str(buffer)
-            print("blob:", blob)
+            buffer, blob = decode_str(buffer)
+            buffer, comment = decode_str(buffer)
+            key = SSHPublicKey(blob)
+            print("key:", key)
             print("comment:", comment)
