@@ -1,12 +1,13 @@
 import struct
 from enum import Enum
+import base64
+import hashlib
 
 
 def decode_str(bytes):
     if len(bytes) < 4:
         raise ValueError("string length missing")
     str_len, = struct.unpack('>I', bytes[:4])
-    print("str_len", str_len)
     remainder = bytes[4:]
     if len(remainder) < str_len:
         raise ValueError("unable to decode string")
@@ -66,9 +67,10 @@ class SSHMessage:
 
 
 class SSHPublicKey:
-    def __init__(self, bytes):
-        buffer, identifier = decode_str(bytes)
-        print('identifier', identifier)
+    def __init__(self, blob):
+        buffer, ktype = decode_str(blob)
+        buffer, public_key = decode_str(buffer)
+        print('xxx', ktype, base64.encodestring(hashlib.sha256(blob).digest()))
 
 
 class SSHKeyList:
@@ -89,5 +91,5 @@ class SSHKeyList:
             buffer, blob = decode_str(buffer)
             buffer, comment = decode_str(buffer)
             key = SSHPublicKey(blob)
-            print("key:", key)
-            print("comment:", comment)
+            # print("key:", key)
+            # print("comment:", comment)
